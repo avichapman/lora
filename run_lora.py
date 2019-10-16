@@ -19,6 +19,8 @@ parser.add_argument('--csrnet_weights', dest='csrnet_weights', type=str, help='C
 parser.add_argument('--output_dir', dest='output_dir', default='', type=str,
                     help='Location to output files')
 
+parser.add_argument('--stride', dest='stride', type=int, default=1, help='Stride for initial scan')
+
 parser.add_argument('--output_images', dest='output_images', default=0, type=int,
                     help='If 1, output images of the outputs and targets')
 
@@ -293,12 +295,26 @@ def initial_scan(data: torch.Tensor, density: torch.Tensor, args) -> torch.Tenso
     # noinspection PyArgumentList
     point_count = pts.size()[0]
 
+    if args.silent == 0:
+        points_covered = 0
+        for row_index in range(point_count):
+            x = int(pts[row_index][2])
+            y = int(pts[row_index][3])
+            if x % args.stride == 0 and y % args.stride == 0:
+                points_covered += 1
+
+        print(points_covered, "/", density.size()[2] * density.size()[3], "=",
+              points_covered / (density.size()[2] * density.size()[3]))
+
     # If they are all zero, there are no more to be found...
     while point_count > 0:
         previous_replacement_count = replacement_count
         for row_index in range(point_count):
             x = int(pts[row_index][2])
             y = int(pts[row_index][3])
+
+            if not (x % args.stride == 0 and y % args.stride == 0):
+                continue
 
             added_point = lro.run_add(x, y)
             if added_point:
