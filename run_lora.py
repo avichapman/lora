@@ -1,9 +1,11 @@
 import argparse
 from csrnet_model import CSRNet
 from csrnet_dataset import CsrNetDataset
+import glob
 import json
 from lora import LocationReconstructionOperator, OperationType, OperationClass
 from matplotlib import pyplot as plt
+import os
 import time
 import torch
 from torchvision import transforms
@@ -18,6 +20,9 @@ parser.add_argument('--csrnet_weights', dest='csrnet_weights', type=str, help='C
 
 parser.add_argument('--output_dir', dest='output_dir', default='', type=str,
                     help='Location to output files')
+
+parser.add_argument('--non_max_suppres', dest='non_max_suppres', type=int, default=0,
+                    help='If 1, use non-maxima suppression')
 
 parser.add_argument('--stride', dest='stride', type=int, default=1, help='Stride for initial scan')
 
@@ -36,8 +41,19 @@ def main():
     csrnet = CSRNet(weights_path=args.csrnet_weights)
     csrnet = csrnet.cuda()
 
-    with open(args.train_json, 'r') as outfile:
-        img_paths = json.load(outfile)
+    root = 'C:\\Datasets\\ShanghaiTech\\'
+
+    # now generate the ShanghaiA's ground truth
+    part_a_test = os.path.join(root, 'part_A_final/test_data', 'images')
+    path_sets = [part_a_test]
+
+    img_paths = []
+    for path in path_sets:
+        for img_path in glob.glob(os.path.join(path, '*.jpg')):
+            img_paths.append(img_path)
+
+    # with open(args.train_json, 'r') as outfile:
+    #     img_paths = json.load(outfile)
 
     train_loader = torch.utils.data.DataLoader(
         CsrNetDataset(img_paths,
@@ -53,6 +69,11 @@ def main():
     running_mae_iro_to_csrnet = 0.
     running_mae_csrnet_to_truth = 0.
     with open(args.output_dir + "/log.txt", "w+") as logfile:
+        print("Scan Stride:", args.stride)
+        print("Use Non-Maxima Suppression:", args.non_max_suppres)
+        logfile.write("Scan Stride: " + str(args.stride) + "\n")
+        logfile.write("Use Non-Maxima Suppression: " + str(args.non_max_suppres) + "\n")
+
         for i, (img, unaltered_image, _, locations) in enumerate(train_loader):
             img = img.cuda()
             density = csrnet(img).detach()
@@ -64,10 +85,20 @@ def main():
 
             start_time = time.perf_counter()
 
+            if args.output_images == 1:
+                plt.gray()
+                plt.imsave(args.output_dir + "/locations.png",
+                           locations.detach().cpu().numpy().squeeze())
+                plt.imsave(args.output_dir + "/density.png",
+                           density.detach().cpu().numpy().squeeze())
+
             if args.silent == 0:
                 print("Current Step: Initial Scan")
 
-            data = initial_scan(data, density, args)
+            if args.non_max_suppres == 1:
+                data = initial_scan_non_max_suppression(data, density, args)
+            else:
+                data = initial_scan(data, density, args)
 
             if args.silent == 0:
                 print("Current Step: Point Shifting")
@@ -314,6 +345,96 @@ def initial_scan(data: torch.Tensor, density: torch.Tensor, args) -> torch.Tenso
             y = int(pts[row_index][3])
 
             if not (x % args.stride == 0 and y % args.stride == 0):
+                continue
+
+            added_point = lro.run_add(x, y)
+            if added_point:
+                replacement_count += 1
+
+        if previous_replacement_count == replacement_count:
+            # We scanned all the non-zero points and haven't found any more to add. Let's call it a day...
+            break
+
+    data = lro.get_discrete_data()
+
+    end_time = time.perf_counter()
+
+    if args.silent == 0:
+        print("Added", replacement_count, "points.")
+        print("Elapsed time in seconds:", end_time - start_time)
+    return data
+
+
+def initial_scan_non_max_suppression(data: torch.Tensor, density: torch.Tensor, args) -> torch.Tensor:
+
+    def _is_local_max(x_pos: int, y_pos: int) -> bool:
+        r"""Returns true if point in 'density' with coordinates 'x' and 'y' is has a greater value than its eight
+        surrounding points.
+
+        Args:
+            x_pos: X Coordinate
+            y_pos: Y Coordinate
+
+        :returns: True if the point is a local maximum.
+        """
+        for local_x in range(max(0, x_pos - 1), min(density.size()[2], x_pos + 2)):
+            for local_y in range(max(0, y_pos - 1), min(density.size()[3], y_pos + 2)):
+                if local_x != x_pos and local_y != y_pos:
+                    if density[0][0][x_pos][y_pos] <= density[0][0][local_x][local_y]:
+                        return False
+
+        return True
+
+    start_time = time.perf_counter()
+
+    lro = LocationReconstructionOperator(output_dir=args.output_dir)
+    lro.set_data(discrete_data=data, target=density)
+
+    replacement_count = 0
+
+    # Subtract any existing locations from the density map...
+    partial_density = density - lro.get_continuous_data()
+
+    threshold = 0.001
+    density_high_only = partial_density.masked_fill(partial_density < threshold, 0.)
+    pts = torch.nonzero(density_high_only)
+
+    # noinspection PyArgumentList
+    point_count = pts.size()[0]
+
+    if args.silent == 0:
+        points_covered = 0
+        for row_index in range(point_count):
+            x = int(pts[row_index][2])
+            y = int(pts[row_index][3])
+
+            if _is_local_max(x, y):
+                points_covered += 1
+
+        print(points_covered, "/", density.size()[2] * density.size()[3], "=",
+              points_covered / (density.size()[2] * density.size()[3]))
+
+    if args.output_images == 1:
+        local_maxima = torch.zeros(density.size())
+        for row_index in range(point_count):
+            x = int(pts[row_index][2])
+            y = int(pts[row_index][3])
+
+            if _is_local_max(x, y):
+                local_maxima[0][0][x][y] = 1.
+
+        plt.gray()
+        plt.imsave(args.output_dir + "/local_maxima.png",
+                   local_maxima.detach().cpu().numpy().squeeze())
+
+    # If they are all zero, there are no more to be found...
+    while point_count > 0:
+        previous_replacement_count = replacement_count
+        for row_index in range(point_count):
+            x = int(pts[row_index][2])
+            y = int(pts[row_index][3])
+
+            if not _is_local_max(x, y):
                 continue
 
             added_point = lro.run_add(x, y)
