@@ -379,7 +379,7 @@ def initial_scan_non_max_suppression(data: torch.Tensor, density: torch.Tensor, 
         """
         for local_x in range(max(0, x_pos - 1), min(density.size()[2], x_pos + 2)):
             for local_y in range(max(0, y_pos - 1), min(density.size()[3], y_pos + 2)):
-                if local_x != x_pos and local_y != y_pos:
+                if local_x != x_pos or local_y != y_pos:
                     if density[0][0][x_pos][y_pos] <= density[0][0][local_x][local_y]:
                         return False
 
