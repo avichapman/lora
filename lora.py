@@ -162,6 +162,46 @@ class LocationReconstructionOperator(object):
                                                             self.max_operation_count).unsqueeze(0)
         self.continuous_data_cube = self.run_convolution(self.continuous_data_cube)  # Convert to continuous data
 
+    def init_data(self):
+        """
+        Initialises the discrete data using non-maximum suppression. Updates the continuous data to match.
+        """
+
+        # Start by stacking the target density map nine high. The bottom level has the original density map
+        # and each subsequent level has the density map offset by 1 pixels in each direction...
+        x_offsets = [0, 0, 1, 1, 1, 0, -1, -1, -1]
+        y_offsets = [0, -1, -1, 0, 1, 1, 1, 0, -1]
+        density_cube = []
+        data_size = self.padded_discrete_data.size()
+
+        for x_offset, y_offset in zip(x_offsets, y_offsets):
+            density_cube.append(self.padded_target\
+                                    .narrow(0, self.padding + x_offset, data_size[0] - 2 * self.padding)\
+                                    .narrow(1, self.padding + y_offset, data_size[1] - 2 * self.padding))
+        # noinspection PyTypeChecker
+        density_cube = torch.stack(density_cube)
+
+        # Now get the argmax for each column of the cube. Where the argmax is zero, the pixel is surrounded by pixels
+        # with smaller values...
+        argmax_pixels = torch.argmax(density_cube, dim=0)
+        argmax_pixels = argmax_pixels + 1
+        argmax_pixels = argmax_pixels.masked_fill(argmax_pixels > 1, 0.)
+
+        # The discrete data should be all zeros, except for a '1' at each pixel that is a local maximum...
+        self.padded_discrete_data[self.padding:(data_size[0] - self.padding),
+                                  self.padding:(data_size[1] - self.padding)] = argmax_pixels
+
+        # Apply mask to only include points in the areas where the target has values...
+        threshold = 0.001
+        density_mask = self.padded_target.masked_fill(self.padded_target < threshold, 0.)
+        density_mask = density_mask.masked_fill(density_mask > 0., 1.)
+        self.padded_discrete_data[:][:] = self.padded_discrete_data * density_mask
+
+        # Transform new discrete data into new continuous data...
+        self.continuous_data_cube = self._stack_data_layers(self.padded_discrete_data,
+                                                            self.max_operation_count).unsqueeze(0)
+        self.continuous_data_cube = self.run_convolution(self.continuous_data_cube)  # Convert to continuous data
+
     def set_data(self, discrete_data: torch.Tensor, target: torch.Tensor):
         """
         Sets the data to be operated on.
@@ -418,9 +458,9 @@ class LocationReconstructionOperator(object):
 
     def run_shift(self, x: int, y: int) -> OperationType:
         """
-        Takes the prospective 2d discrete map (a tensor with values 0 and 1 only) and find the shift operation that will
-        result in the best improvement to the loss after the map is convolved and compared with the target tensor. That
-        operation will be automatically applied and the map returned.
+        Takes the prospective 2d discrete map (a tensor with values 0 and 1 only) and finds the shift operation that
+        will result in the best improvement to the loss after the map is convolved and compared with the target tensor.
+        That operation will be automatically applied and the map returned.
 
         The discrete map and the target tensor must have already been set by a call to 'set_data'. The changed data
         after this call can be accessed with 'get_discrete_data'.
@@ -480,6 +520,60 @@ class LocationReconstructionOperator(object):
                 .narrow(3, slice_y_start, self.slice_width)
             continuous_data_cube_slice[:][:][:] = continuous_data_cube_slice + \
                 self.continuous_shift_operations_cube[best_operation_index]
+
+        return OperationType(best_operation_index)
+
+    def try_shift(self, x: int, y: int) -> OperationType:
+        """
+        Takes the prospective 2d discrete map (a tensor with values 0 and 1 only) and finds the shift operation that
+        will result in the best improvement to the loss after the map is convolved and compared with the target tensor.
+
+        The discrete map and the target tensor must have already been set by a call to 'set_data'. The changed data
+        after this call can be accessed with 'get_discrete_data'.
+
+        Shift operations are operations that operate on already existing points. They include moving, splitting and
+        removing the points.
+
+        Arguments:
+            x: The x position at which the operation is being performed.
+            y: The y position at which the operation is being performed.
+
+        :returns the operation performed.
+        """
+        assert self.padded_discrete_data is not None, "Data must have been set with 'set_data'"
+        assert self.continuous_data_cube is not None, "Target must have been set with 'set_data'"
+        assert self.target_cube is not None, "Target must have been set with 'set_data'"
+
+        # Start by preparing a slice of the data at the correct location. 'data_slice' contains the discrete data being
+        # operated on and must be cut down to size. 'continuous_data_cube_slice' contains the a copy of the continuous
+        # data on each layer. There should be one layer for each supported operation. Since there could be fewer shift
+        # operations than the height of the cube, the cube must be reduced in height. Leaving the extra layers
+        # untouched is not an issue.
+        #
+        # The data is already padded by half the kernel size, so using the coordinates passed in will refer to the top
+        # left edge of a square centred on the coordinates indicated...
+        slice_x_start = x + self.padding - self.slice_width // 2
+        slice_y_start = y + self.padding - self.slice_width // 2
+        data_slice = self.padded_discrete_data\
+            .narrow(0, slice_x_start, self.slice_width)\
+            .narrow(1, slice_y_start, self.slice_width)
+        continuous_data_cube_slice = self.continuous_data_cube\
+            .narrow(1, 0, self.shift_operation_count)\
+            .narrow(2, slice_x_start, self.slice_width)\
+            .narrow(3, slice_y_start, self.slice_width)
+        target_cube_slice = self.target_cube\
+            .narrow(1, 0, self.shift_operation_count)\
+            .narrow(2, slice_x_start, self.slice_width)\
+            .narrow(3, slice_y_start, self.slice_width)
+
+        # Apply prospective operations to the data...
+        continuous_data_cube_slice = continuous_data_cube_slice + self.continuous_shift_operations
+
+        # Apply loss against target...
+        loss_cube = torch.abs(continuous_data_cube_slice - target_cube_slice)
+        losses_per_operation = loss_cube.sum(3).sum(2)[0]
+        # noinspection PyTypeChecker
+        best_operation_index = int(torch.min(losses_per_operation, 0)[1])
 
         return OperationType(best_operation_index)
 
