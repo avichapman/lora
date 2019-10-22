@@ -3,6 +3,8 @@ LOcation Reconstruction Algorithm - Reconstructs the locations that might give r
 
 This is optimised to use a density map created by a modified version of CSRNet. This verison of CSRNet is trained with a target that is create by convolving all truth location annotations with a Gaussian kernel. This allows LORA to work out the locations that, when convolved, would generate a similar density map.
 
+LORA can be run using run_lora.py.
+
 # How LORA Works
 
 ## Step 1 - Initialise Locations
@@ -20,22 +22,22 @@ Each column will contain nine numbers. If the bottom number is the largest, that
 
 To adjust the locations to get them just right, we must check each location and see if applying an operation to the location improves the match with the density map.
 
-LORA supports 14 different operations. Each one has an effect on the locations before and after they are blurred.
+LORA supports 14 different operations. Each one has an effect on the locations before and after they are convolved.
 
 The effects of these operations on both the locations and the resulting density map candiates are precomputed to save time.
 
 ![alt text](images/lora_example_operations.png "Location and Density Map Candiate Operation Effect Tensors")
 
-The locations are stacked in the graphics card memory into a cube with 14 layers.
+The locations are stacked in the CUDA memory into a cube with 14 layers.
 
 One operation is performed on each layer, resulting in a cube with the effect of each operation in each layer.
 
-The layers of the cube are each compared to the target density map.
+![alt text](images/lora_evaluate_operation.png "Evaluating the Density Candidate Tensors")
 
-The layer with the least difference represents the operation that worked best.
+The layers of the cube are each compared to the target density map. The layer with the least difference represents the operation that worked best.
 
 ![alt text](images/lora_perform_operation.png "Performing operations on a location")
 
 # References
 
-I'd like to acknowledge Li, Yuhong and Zhang, Xiaofan and Chen, Deming for their paper 'CSRNet: Dilated convolutional neural networks for understanding the highly congested scenes' and posting their code for public use. The CSRNet code can be found [here](https://github.com/leeyeehoo/CSRNet-pytorch).
+I'd like to acknowledge Li et al for their paper 'CSRNet: Dilated convolutional neural networks for understanding the highly congested scenes' and posting their code for public use. The CSRNet code can be found [here](https://github.com/leeyeehoo/CSRNet-pytorch).
