@@ -1,16 +1,15 @@
 # lora
 LOcation Reconstruction Algorithm - Reconstructs the locations that might give rise to a given density map.
+This is optimised to use a density map created by a modified version of CSRNet. This version of CSRNet is trained with a target that is created by convolving all truth location annotations with a Gaussian kernel. This allows LORA to work out the locations that, when convolved, would generate a similar density map.
 
-This is optimised to use a density map created by a modified version of CSRNet. This verison of CSRNet is trained with a target that is create by convolving all truth location annotations with a Gaussian kernel. This allows LORA to work out the locations that, when convolved, would generate a similar density map.
-
-LORA can be found in lora.py. LORA can be run using run_lora.py. The dataset with was used for both the retraining of the CSRNet and running LORA can be created uing make_dataset.py.
+LORA can be found in lora.py. LORA can be run using run_lora.py. The dataset which was used for both the retraining of the CSRNet and running LORA can be created uing make_dataset.py.
 
 # How LORA Works
 
 ## Step 1 - Initialise Locations
 This can be done by checking each pixel and seeing whether setting it to '1' would result in a density map that is closer to the target density map. If it is, the pixel is set to '1'.
 
-A faster way to do this is to use Non-Maximum Suprresion. Non Maximum Suppression involves finding the pixels in the target density map that are surrounded by less bright pixels. This can be a very slow process if done as a naive exhaustive search of every candiate pixel’s neighbours. A faster way is to do it in CUDA.
+A faster way to do this is to use Non-Maximum Suppression. Non Maximum Suppression involves finding the pixels in the target density map that are surrounded by less bright pixels. This can be a very slow process if done as a naive exhaustive search of every candiate pixel’s neighbours. A faster way is to do it in CUDA.
 
 LORA does it by stacking nine copies of the target density map into a cube, where each layer is offset by one pixel.
 
@@ -28,7 +27,7 @@ The effects of these operations on both the locations and the resulting density 
 
 ![alt text](images/lora_example_operations.png "Location and Density Map Candiate Operation Effect Tensors")
 
-The locations are stacked in the CUDA memory into a cube with 14 layers.
+The locations are stacked in CUDA memory into a cube with 14 layers.
 
 One operation is performed on each layer, resulting in a cube with the effect of each operation in each layer.
 
